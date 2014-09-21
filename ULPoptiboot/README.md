@@ -1,13 +1,13 @@
 ULPoptiboot
 ===========
 
-Custom Optiboot for Ultra Low Power Wireless Arduino Node
-Copyright Charles-Henri Hallard (2014)
-More on my [blog][2]
+Custom Optiboot for Ultra Low Power Wireless Arduino Node  
+Copyright Charles-Henri Hallard (2014)  
+More on my [blog][2]  
 
 
-The added code will result in a compiled size of just under 1kb
-(Originally Optiboot takes just under 0.5kb)
+The added code will result in a compiled size of just under 1kb  
+(Originally Optiboot is under 0.5kb)
 
 
 ##Features
@@ -25,11 +25,11 @@ List of features implemented in this version:
 This is an initial release, it could contain bugs, but works fine for now. Please let me know if you find issues.
 
 ###Installation
-Copy the content of the ULPoptiboot folder into your Arduino optiboot bootloader folder
-mine is at : arduino-install-dir\hardware\arduino\bootloaders\optiboot\
-Backup the original files before overwrite all files.
-Then compile by running:
-make ulpnode
+Copy the content of the ULPoptiboot folder into your Arduino optiboot bootloader folder  
+mine is at : arduino-install-dir\hardware\arduino\bootloaders\optiboot\  
+Backup the original files before overwrite all files.  
+Then compile by running:  
+make ulpnode  
 
 ###Possible issues
 - None for now
