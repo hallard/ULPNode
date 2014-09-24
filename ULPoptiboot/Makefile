@@ -474,6 +474,8 @@ include Makefile.extras
 include Makefile.1284
 include Makefile.custom
 
+# ULPNode custom Makefile
+include Makefile.ulpnode
 
 #---------------------------------------------------------------------------
 #

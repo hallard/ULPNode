@@ -25,17 +25,16 @@ List of features implemented in this version:
 This is an initial release, it could contain bugs, but works fine for now. Please let me know if you find issues.
 
 ###Installation
-Copy the content of the ULPoptiboot folder into your Arduino optiboot bootloader folder  
-mine is at : arduino-install-dir\hardware\arduino\bootloaders\optiboot\  
+Copy the content of the ULPoptiboot folder into a new folder in your Arduino bootloaders folder  
+I copied mine at : arduino-install-dir\hardware\arduino\bootloaders\optiboot\ulpnode\  
 Backup the original files before overwrite all files.  
-Then compile by running:  
 make ulpnode  
 
 ###Possible issues
 - None for now
 
 ##Blog dedicated post
-See this [post][3] for information
+See this [post][3] for detailed information
 
 ##Why
 - To reduce consumption in Ultra Low Power Node
@@ -55,6 +54,6 @@ See news and other projects on my [blog][1]
 [1]: http://hallard.me
 [2]: http://hallard.me/bp-ulpnode/
 [3]: http://hallard.me/ulpnode-bootloader/
-[4]: https://github.com/hallard/ULPNode/ULPoptiboot/Examples/WS2812/WS2812.ino
+[4]: https://github.com/hallard/ULPNode/ULPoptiboot/Examples/WS2812_Demo_Sketch/WS2812_Demo_Sketch.ino
 [5]: https://code.google.com/p/optiboot/
 [6]: https://creativecommons.org/licenses/
