@@ -153,7 +153,7 @@
 /* 6.2 CHH   : Modified for ULPNode                       */
 /*              added driver for WS2812                   */
 /*              added Low Power function for ULPNode      */
-/*              see hallard.me/ulp-bootloader             */
+/*              see http://hallard.me/ulp-bootloader      */
 /* Aug 2014						  */
 /* 6.2 WestfW: make size of length variables dependent    */
 /*              on the SPM_PAGESIZE.  This saves space    */
@@ -247,6 +247,8 @@ optiboot_version = 256*(OPTIBOOT_MAJVER + OPTIBOOT_CUSTOMVER) + OPTIBOOT_MINVER;
 #include <avr/pgmspace.h>
 #include <avr/eeprom.h>
 #include <avr/power.h> 
+#include <avr/wdt.h>
+#include <avr/sleep.h> 
 #include <avr/interrupt.h> 
 #include <util/delay.h>
 
@@ -275,6 +277,12 @@ optiboot_version = 256*(OPTIBOOT_MAJVER + OPTIBOOT_CUSTOMVER) + OPTIBOOT_MINVER;
 */ 
 #include "ULPNode.h"
 
+// address where we put our own flags 
+// the 4th LSB are reserved for ATMEL
+// MCSU Reset flags, so we use 4th MSB 
+//#define EEPROM_FLAGS  (uint8_t *) 0x100 
+#define EEP_FLAGS_UPLOADED    0x80
+#define EEP_FLAGS_BOOTLOADER  0x40
 
 /*
  * stk500.h contains the constant definitions for the stk500v1 comm protocol
@@ -370,8 +378,9 @@ void __attribute__((noinline)) watchdogConfig(uint8_t x);
 
 // Sketch call-able function 
 void __bl_showLED(uint8_t *data, uint16_t datlen);
-void __bl_boosterEnable(void);
-void __bl_boosterDisable(void);
+void __bl_boosterMode(uint8_t enable);
+//void __bl_boosterEnable(void);
+//void __bl_boosterDisable(void);
 
 // Structure of the LED array
 struct cRGB { uint8_t g; uint8_t r; uint8_t b; };
@@ -427,10 +436,8 @@ int main(void) {
   register uint16_t address = 0;
   register pagelen_t  length;
 
-  register uint8_t working=0; // temp working var
-  #ifdef WS2812
+  // Used to drive RGB Led (or use this as var in case no WS2812)
   struct cRGB led;
-  #endif
   
 
   // After the zero init loop, this is the first code to run.
@@ -456,6 +463,10 @@ int main(void) {
   ch = MCUSR;
   MCUSR = 0;
 
+  // Clear LED values;
+  led.r=led.g=led.b=0;
+  
+  
   #ifdef ULPNODE
     // don't forget we divided the clock by 8 with fuses
     // so here, we're at 2Mhz with 16MHz crystal
@@ -486,19 +497,17 @@ int main(void) {
       PWR_SENSOR_PORT |= _BV(PWR_SENSOR); // Set pin to 1 (disable powering module)
     #endif
     
-    // Configure DC Booster pin as output to control the booster
-    #ifdef PWR_BOOST
-      // Enable Pull Up on input before setting it output high 
-      // see section 14.2.3 of datasheet
-      //PWR_BOOST_PORT |= _BV(PWR_BOOST); 
-      
-      PWR_BOOST_DDR  |= _BV(PWR_BOOST); // Set pin as output 
-      PWR_BOOST_PORT |= _BV(PWR_BOOST); // Set pin to 1 to activate the booster
-    #endif    
+    #ifdef WAKE_SWITCH
+      //WAKE_SWITCH_DDR   &= ~_BV(WAKE_SWITCH); // Set switch pin as input 
+      WAKE_SWITCH_PORT  |= _BV(WAKE_SWITCH);  // Activate pull up 
+    #endif
+
+    // Enable the booster 
+    __bl_boosterMode(1);
     
     // As AtMega was setup with fuses CKDIV8 to be 1.8V compatible
     // So we're running at 1Mhz or 2 MHz (8Mhz or 16Mhz resonator) 
-    // But the bootloader was compiled according to the resonator frequency
+    // But the bootloader was compiled for CPU running at 8MHz (3V3 power)
     // so for correct serial speed we set the correct CPU speed here
       
     // Enable ULPNode speed (we should have all power from USB at least 3.3V)
@@ -513,12 +522,6 @@ int main(void) {
       clock_prescale_set(clock_div_1);
     #endif
 
-    #ifdef WS2812
-    // Clear LED;
-    led.r=led.g=led.b=0;
-    __bl_showLED((uint8_t *) &led, sizeof(led));
-    #endif
-
     // ULPNode have 1Mo pull down resistor, on RDX (PD0) so if
     // reading RXD pin is 1 this mean we're connected to a device, 
     // probably FTDI, so we will force entering bootloader mode 
@@ -531,39 +534,28 @@ int main(void) {
     {
       // prepare led RED value (avoid 255, we don't need all luminosity,
       // remember we want low power so avoid high consumption)
-      #ifdef WS2812
       led.r=32; 
-      #endif
-      working=1;
     }
       
     #ifdef WAKE_SWITCH
-      //WAKE_SWITCH_DDR   &= ~_BV(WAKE_SWITCH); // Set switch pin as input 
-      WAKE_SWITCH_PORT  |= _BV(WAKE_SWITCH);  // Activate pull up 
-      
-      // reading pin value immediatly after activated the pullup
-      // can sometimes be too fast and have bad reading value.
-      // clock need to latch the value in port pin
-      // With 2 nop it works all time on my proto, without that
-      // I had bad reading sometimes
-      __asm__ __volatile__ ("nop");
-      __asm__ __volatile__ ("nop");
-      
       // Switch entry is low ? switch pressed we will enter bootloader
       if ( !(WAKE_SWITCH_PIN & _BV(WAKE_SWITCH)) )
       {
         // prepare led BLUE value (avoid 255, we don't need all luminosity,
         // remember we want low power so avoid high consumption)
-        #ifdef WS2812
         led.b=32; 
-        #endif
-        working=1;
       }
     #endif
 
-    
+    // Clear out custom boot indicator flag
+    #ifdef EEPROM_FLAGS
+    eeprom_write_byte(EEPROM_FLAGS, 0);
+    #endif
+
     // no FTDI or wake switch pressed ? direct boot, no bootloader
-    if ((!(ch & _BV(EXTRF))) || working == 0) 
+    // bit 7 of mcusr not used we use it to indicate more information 
+    // of what we done in bootloader
+    if ((!(ch & _BV(EXTRF))) || (led.r==0 && led.b==0)) 
       appStart(ch);
   #else
     if (!(ch & _BV(EXTRF))) 
@@ -573,10 +565,23 @@ int main(void) {
   // From now, sure we want to use the bootloader so prepare our job
   // after upload or time out, reset will be triggered by watchdog
 
+  // Set 8Mhz speed 
+  clock_prescale_set(clock_div_2);
+
+  // Indicate we've entered into bootloading sequence
+  #ifdef EEPROM_FLAGS
+  eeprom_write_byte(EEPROM_FLAGS, EEP_FLAGS_BOOTLOADER);
+  #endif
 
 #if LED_START_FLASHES > 0
   // Set up Timer 1 for timeout counter
   TCCR1B = _BV(CS12) | _BV(CS10); // div 1024
+  
+  #if defined (LED) || defined(LED_DATA_FLASH)
+    // Set LED pin as output 
+    LED_DDR |= _BV(LED);
+  #endif
+  
 #endif
 
 #ifndef SOFT_UART
@@ -611,12 +616,12 @@ int main(void) {
   #ifdef WS2812
   struct cRGB led_off;
   uint8_t * pled;
-  working = LED_START_FLASHES * 2 ;
+  uint8_t count = LED_START_FLASHES * 2 ;
   
   // Initialize led values;
   led_off.r=led_off.g=led_off.b=0;
   #endif 
-  
+
   do 
   {
     TCNT1 = -(F_CPU/(1024*16));
@@ -631,17 +636,17 @@ int main(void) {
     #endif
     watchdogReset();
     #ifdef WS2812
-    if (working%2 == 0 )
+    if (count%2 == 0 )
       pled = (uint8_t *) &led; 
     else
       pled = (uint8_t *) &led_off;
 
     // transmit values to 1 LED (3 values)
     __bl_showLED(pled,3);
-    _delay_us(50);
+    //_delay_us(50);
     #endif
   } 
-  while (--working);
+  while (--count);
 #endif
 
   /* Forever loop: exits by causing WDT reset */
@@ -730,6 +735,11 @@ int main(void) {
         // Add jump to bootloader at RESET vector
         buff[0] = 0x7f;
         buff[1] = 0xce; // rjmp 0x1d00 instruction
+        
+        // Indicate we've done a uploading
+        #ifdef EEPROM_FLAGS
+        eeprom_write_byte(EEPROM_FLAGS, EEP_FLAGS_UPLOADED);
+        #endif
       }
 #endif
 
@@ -985,9 +995,18 @@ void watchdogConfig(uint8_t x) {
 #define w_nop8  w_nop4 w_nop4
 #define w_nop16 w_nop8 w_nop8
 
-// Transmit a led color array to the WS2812B LED
-// datlen is the lengh of the array, so it is equal to
-// the number of LED * 3 (1 led = Red + Green + Blue values)
+/* ======================================================================
+Function: __bl_showLED
+Purpose : Transmit a led color array to the WS2812B LED
+Input   : pointer on data (led color)
+          size of data len (3 bytes for one led)
+Output  : - 
+Comments: !!!!!!!! MANDATORY !!!!!!!!
+          booster should have been enabled before use
+          clock speed should have been setup at 8MHz speed
+          bootloader code is okay for that but pay attention when
+          calling from sketch
+====================================================================== */
 void  __bl_showLED(uint8_t *data, uint16_t datlen)
 {
   uint8_t curbyte,ctr,masklo,maskhi;
@@ -999,6 +1018,7 @@ void  __bl_showLED(uint8_t *data, uint16_t datlen)
   masklo = ~_BV(WS2812) & WS2812_PORT;
   maskhi =  _BV(WS2812) | WS2812_PORT;
   
+  // don't be interrupt intrusive, we'll restore current state
   sreg_prev=SREG;
   cli();  
 
@@ -1067,32 +1087,94 @@ void  __bl_showLED(uint8_t *data, uint16_t datlen)
     );
   }
   
+  // Restore original IRQ state
   SREG=sreg_prev; 
 }
 
+#endif
+// ============================================================= End Of WS2812 LED Code 
 
 
+/* ======================================================================
+Function: __bl_boosterMode
+Purpose : enable booster and full power to 3V3 board or disable it
+Input   : 1 to enable, 0 to disable
+Output  : - 
+Comments: here we know what're doing, this will trigger a wake IRQ that 
+          we don't need, so we disable interrupts and clear associated
+          IRQ flag to avoid this.
+====================================================================== */
+void __bl_boosterMode(uint8_t enable)
+{
+  #ifdef PWR_BOOST
+    // save current interrupt state
+    uint8_t oldSREG = SREG;
+
+    // switch all interrupts off while messing with their settings  
+    cli();
+    
+    // Enable Pull Up on input before setting it output high 
+    // see section 14.2.3 of datasheet
+    //PWR_BOOST_PORT |= _BV(PWR_BOOST); 
+    
+    if (enable!=0)
+    {
+      // Set booster pin as output 
+      // Set pin LOW, this pull CD pin of NCP302 to LOW, triggering
+      // reset ouput of NCP302 letting mosfet close and VCC going to enable pin of MCP1640
+      // To prevent sketch misconfiguration, we always assume port config 
+      // has been lost, so we configure it always from scratch
+      PWR_BOOST_DDR  |= _BV(PWR_BOOST);  // Output
+      PWR_BOOST_PORT &= ~_BV(PWR_BOOST); // Force Enabling booster 
+    }
+    else
+    {
+      // disable DC booster
+      //PWR_BOOST_PORT &= ~_BV(PWR_BOOST); 
+      
+      // Set booster pin as input and disable pull up
+      // CD pin of NCP302 will going HIGH, leaving it reset ouput and mosfet 
+      // to be close, so enable pin of MCP1640 will go LOW thru pull down
+      // To prevent sketch misconfiguration, we always assume port config 
+      // has been lost, so we configure it always from scratch
+      PWR_BOOST_DDR  &= ~_BV(PWR_BOOST); // Input
+      PWR_BOOST_PORT &= ~_BV(PWR_BOOST); // Disable pullup
+    }
+
+    // clear any pending interrupts for Wake we triggered
+    // ULPNode wake pin from booster is on INT1
+    EIFR |= _BV(INT1);
+
+    // restore interrupt previous state
+    SREG = oldSREG; 
+  #endif    
+}
 
 // here are our exported function mapping table (stored in section .functable)
 // It start at end of bootloader 0x7ff0 just before optiboot stored version (0x7ffe)
 // this will create a function table list with fixed addresses
 // so we do not need to get address from .lst file at each bootloader compilation
 // Add other here if you create more (space for 7 functions total)
-
-// 1st funct __bl_showLED
-void * __attribute__((section(".functable"))) func1=&__bl_showLED; // address of __boot_showLED function
-
-
+#ifdef WS2812
+void * __attribute__((section(".functable"))) func1=&__bl_showLED;        // address of __boot_showLED function
 #endif
-// ============================================================= End Of WS2812 LED Code 
+void * __attribute__((section(".functable"))) func2=&__bl_boosterMode;     // address of __bl_boosterMode function
 
 
 // ================================================================================================================================
 void appStart(uint8_t rstFlags) {
 
-  #ifdef PWR_BOOST
-    // disable DC booster
-    //PWR_BOOST_PORT &= ~_BV(PWR_BOOST); 
+  // Disable the booster 
+  // __bl_boosterDisable();
+  
+  // Add our managed flags
+  #ifdef EEPROM_FLAGS
+  rstFlags |= eeprom_read_byte(EEPROM_FLAGS);
+  #endif
+  
+  #ifdef ULPNODE
+    // be sure to set back ULPNode running at 4MHz
+    clock_prescale_set(clock_div_4);
   #endif
 
   // save the reset flags in the designated register
@@ -1100,19 +1182,22 @@ void appStart(uint8_t rstFlags) {
   //  executes before normal c init code) to save R2 to a global variable.
   __asm__ __volatile__ ("mov r2, %0\n" :: "r" (rstFlags));
 
+  // Disbale the watchdog
   watchdogConfig(WATCHDOG_OFF);
+
+ // Start application
   __asm__ __volatile__ (
-#ifdef VIRTUAL_BOOT_PARTITION
-    // Jump to WDT vector
-    "ldi r30,4\n"
-    "clr r31\n"
-#else
-    // Jump to RST vector
-    "clr r30\n"
-    "clr r31\n"
-#endif
-    "ijmp\n"
-  );
+		#ifdef VIRTUAL_BOOT_PARTITION
+		    // Jump to WDT vector
+		    "ldi r30,4\n"
+		    "clr r31\n"
+		#else
+		    // Jump to RST vector
+		    "clr r30\n"
+		    "clr r31\n"
+		#endif
+		    "ijmp\n"
+		  );
 }
 
 /*
