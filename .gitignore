@@ -1,3 +1,7 @@
+#ULPNode
+# do not include .old folders
+*.old
+
 # Windows image file caches
 Thumbs.db
 ehthumbs.db
@@ -26,7 +30,8 @@ $RECYCLE.BIN/
 .LSOverride
 
 # Icon must ends with two \r.
-Icon
+Icon
+
 
 # Thumbnails
 ._*
